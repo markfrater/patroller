@@ -5,9 +5,9 @@
 *    This script takes authentication data from Mikrotik syslog devices     *
 *    and inserts into the Patroller database.                               *
 *    Copyright 2014                                                         *
-*    Last Update = 9 Sep 2014                                               *
+*    Last Update = 5 Apr 2016                                               *
 *    By: Mark Frater                                                        *
-*    Change = adds default Nickname to new RouterDevice                     *
+*    Change = add login /logout of Devices to RouterDevice                  *
 *                                                                           *
 ****************************************************************************/
 // known bugs: If oui not found, entry will not get added to RouterDevice
@@ -120,7 +120,13 @@ if(!include("authconfig_constants.php")) {
                             if(insertLine($db));
                             if(updateUser($db));
                             if (substr($result,0,23)=="trying to log in by mac"){ // subtring now catches login by mac and mac-cookie
-                                if(insertDevice($db));
+                                if(insertDevice($db));                            // this now updates status, lastIp and lastSeen if RouterDevice.macAddress already exists.
+                                // if that RouterDevice is assigned to a User, then we need to get the RouterDevice.userId and update the User.status to $result as well.
+                                // UPDATE User, Router RouterDevice set User.lastLog='{$date}',User.status= '{$result}'
+                                // WHERE User.customerId = Router.customerId
+                                // AND Router.hostName='{$hostname}'
+                                // AND User.id = (select RouterDevice.userId from RouterDevice where RouterDevice.macAddress='{$username}'";
+
                             }
                         } else {
                             echo date("Y-m-d H:i | ") . "Invalid IP address!!!\n";
@@ -167,6 +173,9 @@ function connectDB() {
     } while (true);
 }
 
+//
+// Insert a log entry into the Authlog table.
+//
 
 function insertLine (& $db) {
     global $sourceIP, $date, $time, $hostname, $username, $enddeviceIP, $result, $message ;
@@ -249,28 +258,21 @@ function updateUser (& $db) {
         function insertDevice (& $db) {
     global $sourceIP, $date, $time, $hostname, $username, $enddeviceIP, $result, $message ;
 
-
-
-// see if the device already exists and is allocated to an User or not.
-// If not, then should add the device as "unallocated" to the CustomerID.
-//
-// So, first work out if the $username is listed as a User.weblogin of the account with a router = $hostname (ie routername).
-// If the $username is not found, then its probably a login is from a RouterDevice that logs in via MAC, that is associated
-// with a User. So, check if there is a device with this $username = RouterDevice.macAddress. If not, then add it as an unassociated device.
-
-// or.. do we just check if the $username looks like a MAC address, then look for it in the routerdevices table, and insert if its not there?
-
-
 //      $query = "INSERT into RouterDevice (lastIp,lastSeen,deviceName,routerName,macAddress)
 //              VALUES ('{$enddeviceIP}','{$date}','{$username}','{$hostname}','{$username}')";
 //      $query = "INSERT into RouterDevice (nickName,lastIp,lastSeen,deviceName,routerName,macAddress)
 //              (select distinct description, '{$enddeviceIP}','{$date}','{$username}','{$hostname}','{$username}' from oui where oui = left('{$username}',8))";
-        $query = "INSERT into RouterDevice (nickName,lastIp,lastSeen,deviceName,routerName,macAddress)
-                (select concat(left(description,8),right('{$username}',9)), '{$enddeviceIP}','{$date}','{$username}','{$hostname}','{$username}' from oui where oui = left('{$username}',8))";
+//      $query = "INSERT into RouterDevice (nickName,lastIp,lastSeen,deviceName,routerName,macAddress)
+//              (select concat(left(description,8),right('{$username}',9)), '{$enddeviceIP}','{$date}','{$username}','{$hostname}','{$username}' from oui where oui = left('{$username}',8))";
+        $query ="INSERT into RouterDevice (nickName,lastIp,lastSeen,deviceName,routerName,macAddress,status)
+                (select concat(left(description,8),right('{$username}',9)),
+                        '{$enddeviceIP}','{$date}','{$username}','{$hostname}','{$username}','{$result}'
+                        from oui where oui = left('{$username}',8))
+                ON DUPLICATE KEY UPDATE lastIp=VALUES(lastIp),lastSeen=VALUES(lastSeen),status=VALUES(status)";
 
         echo "query = $query\n";
                                 // only router hostname available. No Router Serial or RouterID in log. Hostname must be unique.
-                                // table is set up to have the devicename as a UNIQUE key, to protect against duplicates
+                                // table is set up to have the macAddress as a UNIQUE key, to protect against duplicates
 
         do {
             $insertdata = & $db->query($query);
@@ -298,5 +300,35 @@ function updateUser (& $db) {
         } while ($iserror ==true);
     }
 
+function getUserId (& $db,$UserId) {
+    global $username;
+    $query = "SELECT RouterDevice.userId from RouterDevice where RouterDevice.macAddress='{$username}'";
+        do {
+            $selectdata = & $db->query($query);
+            $iserror = false;
+            if (PEAR::isError($selectdata)) {
+                $msg = $selectdata->getMessage() . "\n";
+                $errcode = $selectdata->getCode();
+                if ($errcode == DB_ERROR_ACCESS_VIOLATION || $errcode == DB_ERROR_NOSUCHDB ||
+                            $errcode == DB_ERROR_NODBSELECTED || $errcode == DB_ERROR ||
+                            $errcode == DB_ERROR_NODBSELECTED) {
+                    // no connection, etc
+                    echo "/5/ ";
+                    echo date("Y-m-d H:i | ") . "CODE: " . $insertdata->getCode() . " ";
+                    echo $selectdata->getMessage() . " \n";
+                    echo $query . " \n";
+                    $iserror = false;
+                    //$db->disconnect();
+                    $db = connectDB();
+                } else {
+                    echo "/6/ ";
+                    echo date("Y-m-d H:i | ") . $selectdata->getMessage() . "\n";
+                    echo $query . " \n";
+                }
+            }
+        } while ($iserror ==true);
+        $selectdata->fetchInto($UserId); // only one UserID from one row will be returned
+        return $UserId;
+    }
 
 ?>
